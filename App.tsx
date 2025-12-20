@@ -1,0 +1,405 @@
+import React, { useState } from 'react';
+import { 
+  LayoutDashboard, UtensilsCrossed, ChefHat, Package, Calendar, 
+  TrendingDown, PieChart, Settings, CheckCircle2 
+} from 'lucide-react';
+import { INITIAL_INGREDIENTS, INITIAL_DISHES, INITIAL_RECIPES } from './constants';
+import { Ingredient, Dish, RecipeItem, Order, CartItem, Transaction, Reservation, TableInfo } from './types';
+import { ConfirmModal } from './components/ConfirmModal';
+import { POSView } from './components/POSView';
+import { KDSView } from './components/KDSView';
+import { InventoryView } from './components/InventoryView';
+import { ProcurementView } from './components/ProcurementView';
+import { FinanceView } from './components/FinanceView';
+import { MenuView } from './components/MenuView';
+import { ReservationView } from './components/ReservationView';
+
+export default function App() {
+  const [activeTab, setActiveTab] = useState('pos');
+  const [ingredients, setIngredients] = useState<Ingredient[]>(INITIAL_INGREDIENTS);
+  const [dishes, setDishes] = useState<Dish[]>(INITIAL_DISHES);
+  const [recipes, setRecipes] = useState<Record<number, RecipeItem[]>>(INITIAL_RECIPES);
+  const [orders, setOrders] = useState<Order[]>([]);
+  const [cart, setCart] = useState<CartItem[]>([]);
+  const [notification, setNotification] = useState<string | null>(null);
+  const [transactions, setTransactions] = useState<Transaction[]>([]);
+  const [posNeedInvoice, setPosNeedInvoice] = useState(false);
+  const [reservations, setReservations] = useState<Reservation[]>([]);
+
+  // POS State
+  const [posTableNo, setPosTableNo] = useState('');
+  const [posGuestCount, setPosGuestCount] = useState(2);
+
+  // Modal State
+  const [confirmModal, setConfirmModal] = useState<{ isOpen: boolean; title: string; message: string; onConfirm: (() => void) | null }>({ 
+    isOpen: false, title: '', message: '', onConfirm: null 
+  });
+
+  const showNotification = (msg: string) => {
+    setNotification(msg);
+    setTimeout(() => setNotification(null), 3000);
+  };
+
+  const triggerConfirm = (title: string, message: string, onConfirm: () => void) => {
+      setConfirmModal({ isOpen: true, title, message, onConfirm });
+  };
+
+  const closeConfirm = () => {
+      setConfirmModal({ ...confirmModal, isOpen: false });
+  };
+
+  const handleConfirmAction = () => {
+      if (confirmModal.onConfirm) {
+          confirmModal.onConfirm();
+      }
+      closeConfirm();
+  };
+
+  // --- Logic ---
+
+  const addTransaction = (type: 'income' | 'expense', category: string, amount: number, description: string, needInvoice = false, invoiceNo = '') => {
+    const newTx: Transaction = {
+      id: `TX-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+      type, category, amount: parseFloat(amount.toFixed(2)), description,
+      time: new Date().toLocaleTimeString(),
+      invoiceStatus: needInvoice ? 'pending' : 'none',
+      invoiceNo
+    };
+    setTransactions(prev => [newTx, ...prev]);
+  };
+
+  const checkAvailability = (dishId: number) => {
+    const recipe = recipes[dishId];
+    if (!recipe) return true;
+    return recipe.every(item => {
+      const ing = ingredients.find(i => i.id === item.ingredientId);
+      return ing && ing.quantity >= item.amount;
+    });
+  };
+
+  const placeOrder = (items: CartItem[], tableInfo: TableInfo) => {
+      if (!tableInfo.tableNo) {
+          showNotification("请输入桌号");
+          return;
+      }
+      
+      // Check stock
+      for (const item of items) {
+          const recipe = recipes[item.id];
+          if (recipe) {
+              for (const rItem of recipe) {
+                  const ing = ingredients.find(i => i.id === rItem.ingredientId);
+                  if (!ing || ing.quantity < rItem.amount * item.count) {
+                      showNotification(`库存不足: ${ing?.name || '未知食材'}`);
+                      return;
+                  }
+              }
+          }
+      }
+
+      // Deduct Stock
+      const newIngredients = [...ingredients];
+      items.forEach(item => {
+          const recipe = recipes[item.id];
+          if (recipe) {
+              recipe.forEach(rItem => {
+                  const ingIdx = newIngredients.findIndex(i => i.id === rItem.ingredientId);
+                  if (ingIdx !== -1) {
+                      newIngredients[ingIdx].quantity -= rItem.amount * item.count;
+                  }
+              });
+          }
+      });
+      setIngredients(newIngredients);
+
+      // Create Order
+      const newOrder: Order = {
+          id: Date.now().toString().slice(-4),
+          items: [...items],
+          total: items.reduce((sum, i) => sum + i.price * i.count, 0),
+          status: 'pending',
+          timestamp: new Date().toLocaleTimeString(),
+          isReservation: false,
+          tableNo: tableInfo.tableNo,
+          guestCount: tableInfo.guestCount
+      };
+      setOrders([...orders, newOrder]);
+
+      // Add Transaction
+      addTransaction('income', '餐饮收入', newOrder.total, `桌号 ${tableInfo.tableNo} - 订单 #${newOrder.id}`, posNeedInvoice);
+
+      setCart([]);
+      setPosTableNo('');
+      setPosGuestCount(2);
+      setPosNeedInvoice(false);
+      showNotification("下单成功！已通知厨房");
+  };
+
+  const completeOrder = (id: string) => {
+      setOrders(orders.map(o => o.id === id ? { ...o, status: 'completed' } : o));
+      showNotification("订单已完成");
+  };
+
+  const restockIngredient = (id: number, amount: number) => {
+      triggerConfirm("确认补货", "确认要进行补货操作吗？这将自动生成一笔采购支出记录。", () => {
+          const ing = ingredients.find(i => i.id === id);
+          if (ing) {
+              setIngredients(ingredients.map(i => i.id === id ? { ...i, quantity: i.quantity + amount } : i));
+              addTransaction('expense', '原材料采购', ing.cost * amount, `补货: ${ing.name} x ${amount}${ing.unit}`, true);
+              showNotification(`已补货 ${ing.name} ${amount}${ing.unit}`);
+          }
+      });
+  };
+
+  const handleSaveIngredient = (ing: Partial<Ingredient>) => {
+      if (ing.id) {
+          setIngredients(ingredients.map(i => i.id === ing.id ? { ...i, ...ing } as Ingredient : i));
+          showNotification("原材料更新成功");
+      } else {
+          const newIng: Ingredient = {
+              id: Date.now(),
+              name: ing.name || '未命名',
+              quantity: 0,
+              unit: ing.unit || 'kg',
+              threshold: ing.threshold || 0,
+              cost: ing.cost || 0
+          };
+          setIngredients([...ingredients, newIng]);
+          showNotification("新原材料已添加");
+      }
+  };
+
+  const handleBatchImportIngredients = (text: string) => {
+      try {
+          const lines = text.trim().split('\n');
+          const newIngs: Ingredient[] = [];
+          lines.forEach(line => {
+              const parts = line.split(/[\t,，|]/).map(s => s.trim());
+              if (parts.length >= 2) {
+                  newIngs.push({
+                      id: Date.now() + Math.random(),
+                      name: parts[0],
+                      quantity: 0,
+                      unit: parts[1] || 'kg',
+                      cost: parseFloat(parts[2]) || 0,
+                      threshold: parseFloat(parts[3]) || 0
+                  });
+              }
+          });
+          if (newIngs.length > 0) {
+              setIngredients([...ingredients, ...newIngs]);
+              showNotification(`成功导入 ${newIngs.length} 项原材料`);
+          } else {
+              showNotification("未能解析数据，请检查格式");
+          }
+      } catch (e) {
+          showNotification("导入失败");
+      }
+  };
+
+  const handleSaveDish = (dish: Dish, recipe: RecipeItem[]) => {
+      if (dish.id === 0) {
+          const newId = Date.now();
+          setDishes([...dishes, { ...dish, id: newId }]);
+          setRecipes({ ...recipes, [newId]: recipe });
+          showNotification("菜品已创建");
+      } else {
+          setDishes(dishes.map(d => d.id === dish.id ? dish : d));
+          setRecipes({ ...recipes, [dish.id]: recipe });
+          showNotification("菜品已更新");
+      }
+  };
+
+  const handleDeleteDish = (id: number) => {
+      triggerConfirm("确认删除", "确定要删除这个菜品吗？此操作无法撤销。", () => {
+          setDishes(dishes.filter(d => d.id !== id));
+          const { [id]: removed, ...rest } = recipes;
+          setRecipes(rest);
+          showNotification("菜品已删除");
+      });
+  };
+
+  const handleBatchImportDishes = (text: string) => {
+      try {
+          const lines = text.trim().split('\n');
+          const newDishes: Dish[] = [];
+          lines.forEach(line => {
+              const parts = line.split(/[\t,，|]/).map(s => s.trim());
+              if (parts.length >= 2) {
+                  newDishes.push({
+                      id: Date.now() + Math.random(),
+                      name: parts[0],
+                      price: parseFloat(parts[1]) || 0,
+                      image: parts[2] || '🍲'
+                  });
+              }
+          });
+          setDishes([...dishes, ...newDishes]);
+          showNotification(`成功导入 ${newDishes.length} 个菜品`);
+      } catch (e) {
+          showNotification("导入失败");
+      }
+  };
+
+  const executeBatchProcurement = (list: Ingredient[]) => {
+      triggerConfirm("确认采购", `即将采购 ${list.length} 项原材料，总计 ¥${list.reduce((sum, i) => sum + (i.estimatedCost || 0), 0).toFixed(1)}，是否确认？`, () => {
+          const newIngredients = [...ingredients];
+          let totalCost = 0;
+          let desc = "批量采购: ";
+          
+          list.forEach(item => {
+              const idx = newIngredients.findIndex(i => i.id === item.id);
+              if (idx !== -1 && item.suggestedAmount) {
+                  newIngredients[idx].quantity += item.suggestedAmount;
+                  totalCost += item.estimatedCost || 0;
+                  desc += `${item.name}x${item.suggestedAmount}, `;
+              }
+          });
+          
+          setIngredients(newIngredients);
+          addTransaction('expense', '原材料采购', totalCost, desc.slice(0, -2), true);
+          showNotification("采购单已执行，库存已更新");
+      });
+  };
+
+  const handleAddReservation = (res: Partial<Reservation>) => {
+      const newRes: Reservation = {
+          id: `RES-${Date.now()}`,
+          customerName: res.customerName || '匿名',
+          date: res.date || '',
+          time: res.time || '',
+          guests: res.guests || 2,
+          items: res.items || [],
+          status: 'booked'
+      };
+      setReservations([...reservations, newRes]);
+      showNotification("预约已添加");
+  };
+
+  const checkInReservation = (res: Reservation) => {
+      triggerConfirm("确认到店", "客人已到店？这将把状态标记为已到店，并可直接下单。", () => {
+          setReservations(reservations.map(r => r.id === res.id ? { ...r, status: 'checked_in' } : r));
+          
+          if (res.items.length > 0) {
+              setCart(res.items);
+              setPosTableNo(res.realTableNo || 'A1'); // Default or ask user input
+              setPosGuestCount(res.guests);
+              setActiveTab('pos');
+              showNotification("预点菜品已载入 POS，请确认桌号后下单");
+          } else {
+              showNotification("客人已标记为到店");
+          }
+      });
+  };
+
+  const cancelReservation = (id: string) => {
+      triggerConfirm("取消预约", "确定要取消此预约吗？", () => {
+          setReservations(reservations.map(r => r.id === id ? { ...r, status: 'cancelled' } : r));
+          showNotification("预约已取消");
+      });
+  };
+
+  const updateInvoiceStatus = (txId: string, no: string) => {
+      setTransactions(transactions.map(t => t.id === txId ? { ...t, invoiceStatus: 'completed', invoiceNo: no } : t));
+      showNotification("发票信息已更新");
+  };
+
+  // --- Render ---
+
+  const renderContent = () => {
+      switch (activeTab) {
+          case 'pos': return <POSView dishes={dishes} cart={cart} setCart={setCart} placeOrder={placeOrder} checkAvailability={checkAvailability} posTableNo={posTableNo} setPosTableNo={setPosTableNo} posGuestCount={posGuestCount} setPosGuestCount={setPosGuestCount} posNeedInvoice={posNeedInvoice} setPosNeedInvoice={setPosNeedInvoice} />;
+          case 'kds': return <KDSView orders={orders} completeOrder={completeOrder} />;
+          case 'inventory': return <InventoryView ingredients={ingredients} handleSaveIngredient={handleSaveIngredient} handleBatchImportIngredients={handleBatchImportIngredients} restockIngredient={restockIngredient} showNotification={showNotification} />;
+          case 'procurement': return <ProcurementView reservations={reservations} recipes={recipes} ingredients={ingredients} executeBatchProcurement={executeBatchProcurement} />;
+          case 'finance': return <FinanceView transactions={transactions} addTransaction={addTransaction} showNotification={showNotification} updateInvoiceStatus={updateInvoiceStatus} />;
+          case 'menu': return <MenuView dishes={dishes} recipes={recipes} ingredients={ingredients} handleSaveDish={handleSaveDish} handleDeleteDish={handleDeleteDish} handleBatchImportDishes={handleBatchImportDishes} showNotification={showNotification} />;
+          case 'reservation': return <ReservationView dishes={dishes} reservations={reservations} handleAddReservation={handleAddReservation} checkInReservation={checkInReservation} cancelReservation={cancelReservation} showNotification={showNotification} />;
+          default: return <POSView dishes={dishes} cart={cart} setCart={setCart} placeOrder={placeOrder} checkAvailability={checkAvailability} posTableNo={posTableNo} setPosTableNo={setPosTableNo} posGuestCount={posGuestCount} setPosGuestCount={setPosGuestCount} posNeedInvoice={posNeedInvoice} setPosNeedInvoice={setPosNeedInvoice} />;
+      }
+  };
+
+  const navItems = [
+      { id: 'pos', icon: LayoutDashboard, label: '前台收银' },
+      { id: 'kds', icon: ChefHat, label: '后厨大屏' },
+      { id: 'reservation', icon: Calendar, label: '预约管理' },
+      { id: 'inventory', icon: Package, label: '库存监控' },
+      { id: 'procurement', icon: TrendingDown, label: '智能采购' },
+      { id: 'menu', icon: UtensilsCrossed, label: '菜品管理' },
+      { id: 'finance', icon: PieChart, label: '财务报表' },
+  ];
+
+  return (
+    <div className="flex h-screen w-full bg-slate-100 text-slate-900 font-sans">
+        {/* Sidebar */}
+        <div className="w-20 lg:w-64 bg-slate-900 text-white flex flex-col justify-between shadow-2xl transition-all duration-300 z-20">
+            <div>
+                <div className="p-6 flex items-center justify-center lg:justify-start gap-3 border-b border-slate-800">
+                    <div className="bg-orange-500 p-2 rounded-lg"><UtensilsCrossed size={24} className="text-white"/></div>
+                    <span className="font-bold text-xl hidden lg:block tracking-wide">智慧餐饮 ERP</span>
+                </div>
+                <nav className="mt-6 px-2 space-y-2">
+                    {navItems.map(item => (
+                        <button 
+                            key={item.id} 
+                            onClick={() => setActiveTab(item.id)}
+                            className={`w-full flex items-center p-3 rounded-xl transition-all duration-200 group ${activeTab === item.id ? 'bg-orange-600 text-white shadow-lg translate-x-1' : 'text-slate-400 hover:bg-slate-800 hover:text-white'}`}
+                        >
+                            <item.icon size={20} className={`min-w-[20px] ${activeTab === item.id ? 'text-white' : 'text-slate-500 group-hover:text-white'}`} />
+                            <span className="ml-3 hidden lg:block font-medium">{item.label}</span>
+                            {item.id === 'kds' && orders.filter(o => o.status === 'pending').length > 0 && (
+                                <span className="ml-auto bg-red-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full hidden lg:block animate-pulse">{orders.filter(o => o.status === 'pending').length}</span>
+                            )}
+                        </button>
+                    ))}
+                </nav>
+            </div>
+            <div className="p-4 border-t border-slate-800">
+                <button className="w-full flex items-center p-2 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors">
+                    <Settings size={20} />
+                    <span className="ml-3 hidden lg:block text-sm">系统设置</span>
+                </button>
+                <div className="mt-4 text-xs text-slate-600 text-center hidden lg:block">v2.5.0 Professional</div>
+            </div>
+        </div>
+
+        {/* Main Content */}
+        <main className="flex-1 overflow-hidden flex flex-col relative bg-slate-100">
+            {/* Header */}
+            <header className="bg-white shadow-sm h-16 flex items-center justify-between px-6 z-10">
+                <h1 className="text-xl font-bold text-slate-800">{navItems.find(n => n.id === activeTab)?.label}</h1>
+                <div className="flex items-center gap-4">
+                    <div className="text-right hidden sm:block">
+                        <div className="text-sm font-bold text-slate-900">管理员 (Admin)</div>
+                        <div className="text-xs text-slate-500">{new Date().toLocaleDateString()}</div>
+                    </div>
+                    <div className="w-10 h-10 bg-orange-100 rounded-full flex items-center justify-center text-orange-600 font-bold border-2 border-orange-200">A</div>
+                </div>
+            </header>
+            
+            <div className="flex-1 p-6 overflow-hidden">
+                <div className="h-full animate-in fade-in zoom-in-95 duration-300">
+                    {renderContent()}
+                </div>
+            </div>
+
+            {/* Notification Toast */}
+            {notification && (
+                <div className="absolute top-20 right-6 bg-slate-800 text-white px-6 py-3 rounded-lg shadow-2xl flex items-center gap-3 animate-in slide-in-from-right fade-in z-50">
+                    <CheckCircle2 className="text-green-400" size={20}/>
+                    <span className="font-medium">{notification}</span>
+                </div>
+            )}
+
+            {/* Confirm Modal */}
+            <ConfirmModal 
+                isOpen={confirmModal.isOpen} 
+                title={confirmModal.title} 
+                message={confirmModal.message} 
+                onConfirm={handleConfirmAction} 
+                onCancel={closeConfirm}
+            />
+        </main>
+    </div>
+  );
+}
