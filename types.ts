@@ -1,10 +1,13 @@
 export interface Ingredient {
   id: number;
   name: string;
-  quantity: number;
+  category?: string; // 新增
   unit: string;
-  threshold: number;
-  cost: number;
+  notes?: string;    // 新增
+  source?: string;   // 新增
+  quantity: number;  // 对应数据库 current_stock
+  cost: number;      // 对应数据库 cost_per_unit
+  threshold: number; // 预警阈值(保留)
   demand?: number;
   suggestedAmount?: number;
   estimatedCost?: number;
@@ -14,7 +17,13 @@ export interface Dish {
   id: number;
   name: string;
   price: number;
-  image: string;
+  image: string; // 对应数据库 image_url
+  category?: string;       // 新增
+  attributes?: string;     // 新增
+  flavor?: string;         // 新增
+  targetAudience?: string; // 新增
+  difficulty?: string;     // 新增
+  prepItems?: string;      // 新增
 }
 
 export interface RecipeItem {
