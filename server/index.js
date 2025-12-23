@@ -1,14 +1,22 @@
-require('dotenv').config(); // 加载 .env 文件中的配置
+const path = require('path');
+// 显式指定 .env 文件路径为当前文件所在目录下的 .env
+require('dotenv').config({ path: path.join(__dirname, '.env') }); 
+
 const express = require('express');
 const mysql = require('mysql2');
 const cors = require('cors');
 const multer = require('multer');
-const path = require('path');
 const fs = require('fs');
 
 const app = express();
 app.use(cors());
 app.use(express.json());
+
+// 增加请求日志中间件，方便调试
+app.use((req, res, next) => {
+    console.log(`[Request] ${req.method} ${req.url}`);
+    next();
+});
 
 // --- 1. 图片存储配置 ---
 const uploadDir = path.join(__dirname, 'uploads');
@@ -33,7 +41,7 @@ const upload = multer({ storage: storage });
 const dbConfig = {
     host: process.env.DB_HOST || 'localhost',
     user: process.env.DB_USER || 'root',
-    password: process.env.DB_PASSWORD || 'password',
+    password: process.env.DB_PASSWORD, 
     database: process.env.DB_NAME || 'cjdcxt',
     port: parseInt(process.env.DB_PORT || '3306'),
     waitForConnections: true,
@@ -45,11 +53,16 @@ const dbConfig = {
 
 const db = mysql.createPool(dbConfig);
 
+// 健康检查路由
+app.get('/', (req, res) => {
+    res.send('Restaurant ERP Backend is Running! 🚀');
+});
+
 // 简单的保活检查
 db.getConnection((err, connection) => {
     if (err) {
-        console.error('❌ 数据库连接失败:', err.message);
-        console.error('请检查 server/.env 文件中的配置是否正确');
+        console.error('⚠️ 数据库连接警告:', err.message);
+        console.error('提示: 即使数据库未连接，前端现在也支持离线模式运行。');
     } else {
         console.log('✅ 成功连接到数据库:', dbConfig.database);
         connection.release();
@@ -63,10 +76,13 @@ app.post('/api/upload', upload.single('file'), (req, res) => {
     res.json({ url: `/uploads/${req.file.filename}` });
 });
 
-// 获取菜品
 app.get('/api/dishes', (req, res) => {
     db.query('SELECT * FROM dishes WHERE status = 1 ORDER BY name ASC', (err, results) => {
-        if (err) return res.status(500).json(err);
+        if (err) {
+            if (err.code === 'ER_NO_SUCH_TABLE') return res.json([]);
+            console.error("查询菜品失败:", err.message);
+            return res.status(500).json({ error: err.message });
+        }
         const mapped = results.map(r => {
             let attrs = {};
             if (typeof r.attributes === 'object' && r.attributes !== null) {
@@ -90,10 +106,13 @@ app.get('/api/dishes', (req, res) => {
     });
 });
 
-// 获取库存
 app.get('/api/ingredients', (req, res) => {
     db.query('SELECT * FROM ingredients ORDER BY category, name', (err, results) => {
-        if (err) return res.status(500).json(err);
+        if (err) {
+            if (err.code === 'ER_NO_SUCH_TABLE') return res.json([]);
+            console.error("查询库存失败:", err.message);
+            return res.status(500).json({ error: err.message });
+        }
         const mapped = results.map(r => ({
             id: r.id,
             name: r.name,
@@ -109,26 +128,75 @@ app.get('/api/ingredients', (req, res) => {
     });
 });
 
-// 下单
 app.post('/api/orders', (req, res) => {
     const { tableNo, guestCount, items, total, eventName } = req.body;
     const orderId = Date.now().toString();
     
     const sql = 'INSERT INTO orders (id, event_name, guest_count, total_amount, status, items, table_no) VALUES (?, ?, ?, ?, ?, ?, ?)';
     db.query(sql, [orderId, eventName || '日常用餐', guestCount, total, 'pending', JSON.stringify(items), tableNo], (err, result) => {
-        if (err) return res.status(500).json(err);
+        if (err) {
+            console.error("下单失败:", err.message);
+            return res.status(500).json({ error: err.message });
+        }
         res.json({ message: '菜单已确认', orderId });
     });
 });
 
-// 初始化数据库结构
 app.get('/api/init-db', (req, res) => {
-    // 既然用户已经手动建表，这里主要作为连接测试
-    res.send("数据库连接正常 (cjdcxt)");
+    console.log("正在执行数据库初始化...");
+    const sqlStatements = [
+        `CREATE TABLE IF NOT EXISTS dishes (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            name VARCHAR(255) NOT NULL,
+            price DECIMAL(10, 2) NOT NULL,
+            image_url TEXT,
+            category VARCHAR(100),
+            attributes JSON,
+            status TINYINT DEFAULT 1,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )`,
+        `CREATE TABLE IF NOT EXISTS ingredients (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            name VARCHAR(255) NOT NULL,
+            unit VARCHAR(50),
+            current_stock DECIMAL(10, 2) DEFAULT 0,
+            cost_per_unit DECIMAL(10, 2) DEFAULT 0,
+            alert_threshold DECIMAL(10, 2) DEFAULT 2,
+            category VARCHAR(100),
+            source VARCHAR(255),
+            expiry_date DATE,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )`,
+        `CREATE TABLE IF NOT EXISTS orders (
+            id VARCHAR(50) PRIMARY KEY,
+            event_name VARCHAR(255),
+            guest_count INT,
+            total_amount DECIMAL(10, 2),
+            status VARCHAR(50) DEFAULT 'pending',
+            items JSON,
+            table_no VARCHAR(50),
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )`
+    ];
+
+    let completed = 0;
+    let errors = [];
+
+    const runNext = (index) => {
+        if (index >= sqlStatements.length) {
+            if (errors.length > 0) return res.status(500).send(`部分建表失败: ${errors.join('; ')}`);
+            return res.send("✅ 数据库表结构初始化成功！");
+        }
+        db.query(sqlStatements[index], (err) => {
+            if (err) errors.push(err.message);
+            runNext(index + 1);
+        });
+    };
+
+    runNext(0);
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
+app.listen(PORT, '0.0.0.0', () => {
     console.log(`🚀 后端服务已启动: http://localhost:${PORT}`);
-    console.log(`📦 正在连接数据库: ${dbConfig.database}`);
 });

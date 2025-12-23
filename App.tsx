@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { 
   LayoutDashboard, UtensilsCrossed, ChefHat, Package, Calendar, 
-  TrendingDown, PieChart, Settings, CheckCircle2, Database 
+  TrendingDown, PieChart, Settings, CheckCircle2, Database, WifiOff 
 } from 'lucide-react';
 import { Ingredient, Dish, RecipeItem, Order, CartItem, Transaction, Reservation, TableInfo } from './types';
 import { ConfirmModal } from './components/ConfirmModal';
@@ -12,13 +12,13 @@ import { ProcurementView } from './components/ProcurementView';
 import { FinanceView } from './components/FinanceView';
 import { MenuView } from './components/MenuView';
 import { ReservationView } from './components/ReservationView';
-import { api } from './api'; // 导入 API
-import { INITIAL_RECIPES } from './constants'; // 配方暂时保留在本地，后续可移至数据库
+import { api } from './api'; 
+import { INITIAL_RECIPES, INITIAL_DISHES, INITIAL_INGREDIENTS } from './constants'; 
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('pos');
+  const [isOffline, setIsOffline] = useState(false);
   
-  // 初始状态设为空，等待从数据库加载
   const [ingredients, setIngredients] = useState<Ingredient[]>([]);
   const [dishes, setDishes] = useState<Dish[]>([]);
   const [recipes, setRecipes] = useState<Record<number, RecipeItem[]>>(INITIAL_RECIPES);
@@ -46,22 +46,33 @@ export default function App() {
 
   const loadData = async () => {
     try {
+      // 尝试连接后端
       const [remoteDishes, remoteIngs] = await Promise.all([
         api.getDishes(),
         api.getIngredients()
       ]);
       setDishes(remoteDishes);
       setIngredients(remoteIngs);
-    } catch (e) {
-      console.error("无法连接后端，请确保后端已启动", e);
-      showNotification("无法连接数据库，显示本地/缓存模式");
+      setIsOffline(false);
+    } catch (e: any) {
+      console.warn("后端连接失败，切换至本地模式:", e.message);
+      showNotification("无法连接服务器，已切换至离线演示模式");
+      setIsOffline(true);
+      // Fallback: 加载本地演示数据
+      setDishes(INITIAL_DISHES);
+      setIngredients(INITIAL_INGREDIENTS);
+      setRecipes(INITIAL_RECIPES);
     }
   };
 
   const handleInitDB = async () => {
+    if (isOffline) {
+        showNotification("离线模式下无法初始化数据库");
+        return;
+    }
     const msg = await api.initDB();
     showNotification(msg);
-    loadData(); // 初始化后刷新数据
+    loadData(); 
   };
 
   const showNotification = (msg: string) => {
@@ -102,7 +113,6 @@ export default function App() {
     if (!recipe) return true;
     return recipe.every(item => {
       const ing = ingredients.find(i => i.id === item.ingredientId);
-      // 注意：数据库返回的可能是字符串类型的数字，安全起见这里比较时不强求类型，或者确保 parse
       return ing && ing.quantity >= item.amount;
     });
   };
@@ -113,7 +123,7 @@ export default function App() {
           return;
       }
       
-      // 1. 简单的本地库存检查 (Optimistic UI)
+      // 1. 本地库存检查
       for (const item of items) {
           const recipe = recipes[item.id];
           if (recipe) {
@@ -127,57 +137,57 @@ export default function App() {
           }
       }
 
-      // 2. 调用后端 API 保存订单
-      try {
-        const orderData = {
-          tableNo: tableInfo.tableNo,
-          guestCount: tableInfo.guestCount,
-          eventName: tableInfo.tableNo + '桌用餐',
-          items: items,
-          total: items.reduce((sum, i) => sum + i.price * i.count, 0)
-        };
-        
-        await api.createOrder(orderData); // 发送给后端数据库
-
-        // 3. 更新本地状态 (扣减库存)
-        const newIngredients = [...ingredients];
-        items.forEach(item => {
-            const recipe = recipes[item.id];
-            if (recipe) {
-                recipe.forEach(rItem => {
-                    const ingIdx = newIngredients.findIndex(i => i.id === rItem.ingredientId);
-                    if (ingIdx !== -1) {
-                        newIngredients[ingIdx].quantity -= rItem.amount * item.count;
-                    }
-                });
-            }
-        });
-        setIngredients(newIngredients);
-
-        // Create Local Order for KDS View
-        const newOrder: Order = {
-            id: Date.now().toString().slice(-4),
-            items: [...items],
-            total: orderData.total,
-            status: 'pending',
-            timestamp: new Date().toLocaleTimeString(),
-            isReservation: false,
-            tableNo: tableInfo.tableNo,
-            guestCount: tableInfo.guestCount
-        };
-        setOrders([...orders, newOrder]);
-
-        addTransaction('income', '餐饮收入', newOrder.total, `桌号 ${tableInfo.tableNo}`, posNeedInvoice);
-
-        setCart([]);
-        setPosTableNo('');
-        setPosGuestCount(2);
-        setPosNeedInvoice(false);
-        showNotification("下单成功！数据已同步至数据库");
-
-      } catch (error) {
-        showNotification("下单失败：网络错误");
+      // 2. 尝试调用后端 (如果在线)
+      if (!isOffline) {
+          try {
+            const orderData = {
+              tableNo: tableInfo.tableNo,
+              guestCount: tableInfo.guestCount,
+              eventName: tableInfo.tableNo + '桌用餐',
+              items: items,
+              total: items.reduce((sum, i) => sum + i.price * i.count, 0)
+            };
+            await api.createOrder(orderData);
+          } catch (error) {
+            console.error("下单同步失败", error);
+            showNotification("网络错误，订单仅保存在本地");
+          }
       }
+
+      // 3. 更新本地状态 (扣减库存)
+      const newIngredients = [...ingredients];
+      items.forEach(item => {
+          const recipe = recipes[item.id];
+          if (recipe) {
+              recipe.forEach(rItem => {
+                  const ingIdx = newIngredients.findIndex(i => i.id === rItem.ingredientId);
+                  if (ingIdx !== -1) {
+                      newIngredients[ingIdx].quantity -= rItem.amount * item.count;
+                  }
+              });
+          }
+      });
+      setIngredients(newIngredients);
+
+      const newOrder: Order = {
+          id: Date.now().toString().slice(-4),
+          items: [...items],
+          total: items.reduce((sum, i) => sum + i.price * i.count, 0),
+          status: 'pending',
+          timestamp: new Date().toLocaleTimeString(),
+          isReservation: false,
+          tableNo: tableInfo.tableNo,
+          guestCount: tableInfo.guestCount
+      };
+      setOrders([...orders, newOrder]);
+
+      addTransaction('income', '餐饮收入', newOrder.total, `桌号 ${tableInfo.tableNo}`, posNeedInvoice);
+
+      setCart([]);
+      setPosTableNo('');
+      setPosGuestCount(2);
+      setPosNeedInvoice(false);
+      showNotification(isOffline ? "下单成功 (离线模式)" : "下单成功！");
   };
 
   const completeOrder = (id: string) => {
@@ -186,22 +196,20 @@ export default function App() {
   };
 
   const restockIngredient = (id: number, amount: number) => {
-      triggerConfirm("确认补货", "确认要进行补货操作吗？这将自动生成一笔采购支出记录。", () => {
-          // 这里将来应该调用 api.updateIngredient
+      triggerConfirm("确认补货", "确认要进行补货操作吗？", () => {
           const ing = ingredients.find(i => i.id === id);
           if (ing) {
               setIngredients(ingredients.map(i => i.id === id ? { ...i, quantity: i.quantity + amount } : i));
               addTransaction('expense', '原材料采购', ing.cost * amount, `补货: ${ing.name} x ${amount}${ing.unit}`, true);
-              showNotification(`已补货 ${ing.name} ${amount}${ing.unit}`);
+              showNotification(`已补货 ${ing.name}`);
           }
       });
   };
 
   const handleSaveIngredient = (ing: Partial<Ingredient>) => {
-      // 模拟保存，实际项目应调用 API POST /api/ingredients
       if (ing.id) {
           setIngredients(ingredients.map(i => i.id === ing.id ? { ...i, ...ing } as Ingredient : i));
-          showNotification("原材料更新成功 (本地演示)");
+          showNotification("原材料更新成功");
       } else {
           const newIng: Ingredient = {
               id: Date.now(),
@@ -212,7 +220,7 @@ export default function App() {
               cost: ing.cost || 0
           };
           setIngredients([...ingredients, newIng]);
-          showNotification("新原材料已添加 (本地演示)");
+          showNotification("新原材料已添加");
       }
   };
 
@@ -237,7 +245,7 @@ export default function App() {
               setIngredients([...ingredients, ...newIngs]);
               showNotification(`成功导入 ${newIngs.length} 项原材料`);
           } else {
-              showNotification("未能解析数据，请检查格式");
+              showNotification("未能解析数据");
           }
       } catch (e) {
           showNotification("导入失败");
@@ -245,21 +253,20 @@ export default function App() {
   };
 
   const handleSaveDish = (dish: Dish, recipe: RecipeItem[]) => {
-      // 模拟保存，实际应调用 API
       if (dish.id === 0) {
           const newId = Date.now();
           setDishes([...dishes, { ...dish, id: newId }]);
           setRecipes({ ...recipes, [newId]: recipe });
-          showNotification("菜品已创建 (本地)");
+          showNotification("菜品已创建");
       } else {
           setDishes(dishes.map(d => d.id === dish.id ? dish : d));
           setRecipes({ ...recipes, [dish.id]: recipe });
-          showNotification("菜品已更新 (本地)");
+          showNotification("菜品已更新");
       }
   };
 
   const handleDeleteDish = (id: number) => {
-      triggerConfirm("确认删除", "确定要删除这个菜品吗？此操作无法撤销。", () => {
+      triggerConfirm("确认删除", "确定要删除这个菜品吗？", () => {
           setDishes(dishes.filter(d => d.id !== id));
           const { [id]: removed, ...rest } = recipes;
           setRecipes(rest);
@@ -268,7 +275,6 @@ export default function App() {
   };
 
   const handleBatchImportDishes = (text: string) => {
-      // ... 保持原有逻辑 ...
       try {
           const lines = text.trim().split('\n');
           const newDishes: Dish[] = [];
@@ -291,8 +297,7 @@ export default function App() {
   };
 
   const executeBatchProcurement = (list: Ingredient[]) => {
-      // ... 保持原有逻辑 ...
-      triggerConfirm("确认采购", `即将采购 ${list.length} 项原材料，总计 ¥${list.reduce((sum, i) => sum + (i.estimatedCost || 0), 0).toFixed(1)}，是否确认？`, () => {
+      triggerConfirm("确认采购", `总计 ¥${list.reduce((sum, i) => sum + (i.estimatedCost || 0), 0).toFixed(1)}，是否确认？`, () => {
           const newIngredients = [...ingredients];
           let totalCost = 0;
           let desc = "批量采购: ";
@@ -308,7 +313,7 @@ export default function App() {
           
           setIngredients(newIngredients);
           addTransaction('expense', '原材料采购', totalCost, desc.slice(0, -2), true);
-          showNotification("采购单已执行，库存已更新");
+          showNotification("采购单已执行");
       });
   };
 
@@ -327,15 +332,14 @@ export default function App() {
   };
 
   const checkInReservation = (res: Reservation) => {
-      triggerConfirm("确认到店", "客人已到店？这将把状态标记为已到店，并可直接下单。", () => {
+      triggerConfirm("确认到店", "客人已到店？", () => {
           setReservations(reservations.map(r => r.id === res.id ? { ...r, status: 'checked_in' } : r));
-          
           if (res.items.length > 0) {
               setCart(res.items);
               setPosTableNo(res.realTableNo || 'A1'); 
               setPosGuestCount(res.guests);
               setActiveTab('pos');
-              showNotification("预点菜品已载入 POS，请确认桌号后下单");
+              showNotification("预点菜品已载入 POS");
           } else {
               showNotification("客人已标记为到店");
           }
@@ -407,17 +411,18 @@ export default function App() {
             <div className="p-4 border-t border-slate-800">
                 <button 
                   onClick={handleInitDB}
-                  className="w-full flex items-center p-2 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors mb-2"
-                  title="仅首次使用"
+                  className={`w-full flex items-center p-2 rounded-lg transition-colors mb-2 ${isOffline ? 'text-gray-500 cursor-not-allowed' : 'text-slate-400 hover:text-white hover:bg-slate-800'}`}
+                  title="仅在线时可用"
+                  disabled={isOffline}
                 >
-                    <Database size={20} className="text-blue-500"/>
+                    <Database size={20} className={isOffline ? "text-gray-600" : "text-blue-500"}/>
                     <span className="ml-3 hidden lg:block text-sm">初始化数据库</span>
                 </button>
                 <div className="w-full flex items-center p-2 rounded-lg text-slate-400">
                     <Settings size={20} />
                     <span className="ml-3 hidden lg:block text-sm">系统设置</span>
                 </div>
-                <div className="mt-4 text-xs text-slate-600 text-center hidden lg:block">v2.5.0 MySQL Edition</div>
+                <div className="mt-4 text-xs text-slate-600 text-center hidden lg:block">v2.6.0 {isOffline ? '(Offline Mode)' : 'MySQL Edition'}</div>
             </div>
         </div>
 
@@ -425,7 +430,14 @@ export default function App() {
         <main className="flex-1 overflow-hidden flex flex-col relative bg-slate-100">
             {/* Header */}
             <header className="bg-white shadow-sm h-16 flex items-center justify-between px-6 z-10">
-                <h1 className="text-xl font-bold text-slate-800">{navItems.find(n => n.id === activeTab)?.label}</h1>
+                <div className="flex items-center gap-4">
+                  <h1 className="text-xl font-bold text-slate-800">{navItems.find(n => n.id === activeTab)?.label}</h1>
+                  {isOffline && (
+                    <span className="bg-gray-200 text-gray-600 px-3 py-1 rounded-full text-xs font-bold flex items-center gap-2">
+                      <WifiOff size={14} /> 离线演示模式
+                    </span>
+                  )}
+                </div>
                 <div className="flex items-center gap-4">
                     <div className="text-right hidden sm:block">
                         <div className="text-sm font-bold text-slate-900">管理员 (Admin)</div>
