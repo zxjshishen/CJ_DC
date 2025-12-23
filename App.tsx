@@ -1,10 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { 
   LayoutDashboard, UtensilsCrossed, ChefHat, Package, Calendar, 
-  TrendingDown, PieChart, Settings, CheckCircle2, Database, WifiOff 
+  TrendingDown, PieChart, Settings, CheckCircle2, Database, WifiOff, Activity
 } from 'lucide-react';
 import { Ingredient, Dish, RecipeItem, Order, CartItem, Transaction, Reservation, TableInfo } from './types';
 import { ConfirmModal } from './components/ConfirmModal';
+import { DashboardView } from './components/DashboardView';
 import { POSView } from './components/POSView';
 import { KDSView } from './components/KDSView';
 import { InventoryView } from './components/InventoryView';
@@ -15,10 +16,21 @@ import { ReservationView } from './components/ReservationView';
 import { api } from './api'; 
 import { INITIAL_RECIPES, INITIAL_DISHES, INITIAL_INGREDIENTS } from './constants'; 
 
+// LocalStorage Helper Keys
+const STORAGE_KEYS = {
+  DISHES: 'erp_dishes',
+  INGREDIENTS: 'erp_ingredients',
+  RECIPES: 'erp_recipes',
+  ORDERS: 'erp_orders',
+  TRANSACTIONS: 'erp_transactions',
+  RESERVATIONS: 'erp_reservations'
+};
+
 export default function App() {
-  const [activeTab, setActiveTab] = useState('pos');
+  const [activeTab, setActiveTab] = useState('dashboard');
   const [isOffline, setIsOffline] = useState(false);
   
+  // Initialize state with lazy initializers to read from localStorage if needed
   const [ingredients, setIngredients] = useState<Ingredient[]>([]);
   const [dishes, setDishes] = useState<Dish[]>([]);
   const [recipes, setRecipes] = useState<Record<number, RecipeItem[]>>(INITIAL_RECIPES);
@@ -44,6 +56,42 @@ export default function App() {
     loadData();
   }, []);
 
+  // --- Persistence Effect for Offline Mode ---
+  useEffect(() => {
+    if (isOffline) {
+      localStorage.setItem(STORAGE_KEYS.DISHES, JSON.stringify(dishes));
+      localStorage.setItem(STORAGE_KEYS.INGREDIENTS, JSON.stringify(ingredients));
+      localStorage.setItem(STORAGE_KEYS.RECIPES, JSON.stringify(recipes));
+      localStorage.setItem(STORAGE_KEYS.ORDERS, JSON.stringify(orders));
+      localStorage.setItem(STORAGE_KEYS.TRANSACTIONS, JSON.stringify(transactions));
+      localStorage.setItem(STORAGE_KEYS.RESERVATIONS, JSON.stringify(reservations));
+    }
+  }, [dishes, ingredients, recipes, orders, transactions, reservations, isOffline]);
+
+  const loadLocalData = () => {
+    try {
+      const savedDishes = localStorage.getItem(STORAGE_KEYS.DISHES);
+      const savedIngs = localStorage.getItem(STORAGE_KEYS.INGREDIENTS);
+      const savedRecipes = localStorage.getItem(STORAGE_KEYS.RECIPES);
+      const savedOrders = localStorage.getItem(STORAGE_KEYS.ORDERS);
+      const savedTrans = localStorage.getItem(STORAGE_KEYS.TRANSACTIONS);
+      const savedRes = localStorage.getItem(STORAGE_KEYS.RESERVATIONS);
+
+      if (savedDishes) setDishes(JSON.parse(savedDishes)); else setDishes(INITIAL_DISHES);
+      if (savedIngs) setIngredients(JSON.parse(savedIngs)); else setIngredients(INITIAL_INGREDIENTS);
+      if (savedRecipes) setRecipes(JSON.parse(savedRecipes)); else setRecipes(INITIAL_RECIPES);
+      if (savedOrders) setOrders(JSON.parse(savedOrders));
+      if (savedTrans) setTransactions(JSON.parse(savedTrans));
+      if (savedRes) setReservations(JSON.parse(savedRes));
+    } catch (e) {
+      console.error("加载本地缓存失败", e);
+      // Fallback if local storage is corrupt
+      setDishes(INITIAL_DISHES);
+      setIngredients(INITIAL_INGREDIENTS);
+      setRecipes(INITIAL_RECIPES);
+    }
+  };
+
   const loadData = async () => {
     try {
       // 尝试连接后端
@@ -54,14 +102,12 @@ export default function App() {
       setDishes(remoteDishes);
       setIngredients(remoteIngs);
       setIsOffline(false);
+      showNotification("已连接至服务器");
     } catch (e: any) {
       console.warn("后端连接失败，切换至本地模式:", e.message);
-      showNotification("无法连接服务器，已切换至离线演示模式");
+      showNotification("连接服务器失败，使用本地离线模式");
       setIsOffline(true);
-      // Fallback: 加载本地演示数据
-      setDishes(INITIAL_DISHES);
-      setIngredients(INITIAL_INGREDIENTS);
-      setRecipes(INITIAL_RECIPES);
+      loadLocalData();
     }
   };
 
@@ -362,6 +408,7 @@ export default function App() {
 
   const renderContent = () => {
       switch (activeTab) {
+          case 'dashboard': return <DashboardView transactions={transactions} orders={orders} ingredients={ingredients} reservations={reservations} />;
           case 'pos': return <POSView dishes={dishes} cart={cart} setCart={setCart} placeOrder={placeOrder} checkAvailability={checkAvailability} posTableNo={posTableNo} setPosTableNo={setPosTableNo} posGuestCount={posGuestCount} setPosGuestCount={setPosGuestCount} posNeedInvoice={posNeedInvoice} setPosNeedInvoice={setPosNeedInvoice} />;
           case 'kds': return <KDSView orders={orders} completeOrder={completeOrder} />;
           case 'inventory': return <InventoryView ingredients={ingredients} handleSaveIngredient={handleSaveIngredient} handleBatchImportIngredients={handleBatchImportIngredients} restockIngredient={restockIngredient} showNotification={showNotification} />;
@@ -369,11 +416,12 @@ export default function App() {
           case 'finance': return <FinanceView transactions={transactions} addTransaction={addTransaction} showNotification={showNotification} updateInvoiceStatus={updateInvoiceStatus} />;
           case 'menu': return <MenuView dishes={dishes} recipes={recipes} ingredients={ingredients} handleSaveDish={handleSaveDish} handleDeleteDish={handleDeleteDish} handleBatchImportDishes={handleBatchImportDishes} showNotification={showNotification} />;
           case 'reservation': return <ReservationView dishes={dishes} reservations={reservations} handleAddReservation={handleAddReservation} checkInReservation={checkInReservation} cancelReservation={cancelReservation} showNotification={showNotification} />;
-          default: return <POSView dishes={dishes} cart={cart} setCart={setCart} placeOrder={placeOrder} checkAvailability={checkAvailability} posTableNo={posTableNo} setPosTableNo={setPosTableNo} posGuestCount={posGuestCount} setPosGuestCount={setPosGuestCount} posNeedInvoice={posNeedInvoice} setPosNeedInvoice={setPosNeedInvoice} />;
+          default: return <DashboardView transactions={transactions} orders={orders} ingredients={ingredients} reservations={reservations} />;
       }
   };
 
   const navItems = [
+      { id: 'dashboard', icon: Activity, label: '经营概况' },
       { id: 'pos', icon: LayoutDashboard, label: '前台收银' },
       { id: 'kds', icon: ChefHat, label: '后厨大屏' },
       { id: 'reservation', icon: Calendar, label: '预约管理' },
@@ -422,7 +470,7 @@ export default function App() {
                     <Settings size={20} />
                     <span className="ml-3 hidden lg:block text-sm">系统设置</span>
                 </div>
-                <div className="mt-4 text-xs text-slate-600 text-center hidden lg:block">v2.6.0 {isOffline ? '(Offline Mode)' : 'MySQL Edition'}</div>
+                <div className="mt-4 text-xs text-slate-600 text-center hidden lg:block">v2.6.2 {isOffline ? '(Offline)' : 'MySQL'}</div>
             </div>
         </div>
 
@@ -433,17 +481,17 @@ export default function App() {
                 <div className="flex items-center gap-4">
                   <h1 className="text-xl font-bold text-slate-800">{navItems.find(n => n.id === activeTab)?.label}</h1>
                   {isOffline && (
-                    <span className="bg-gray-200 text-gray-600 px-3 py-1 rounded-full text-xs font-bold flex items-center gap-2">
-                      <WifiOff size={14} /> 离线演示模式
+                    <span className="bg-gray-100 text-gray-500 px-3 py-1 rounded-full text-xs font-bold flex items-center gap-2 border border-gray-200">
+                      <WifiOff size={14} /> 离线模式 (数据仅保存在浏览器)
                     </span>
                   )}
                 </div>
                 <div className="flex items-center gap-4">
                     <div className="text-right hidden sm:block">
-                        <div className="text-sm font-bold text-slate-900">管理员 (Admin)</div>
+                        <div className="text-sm font-bold text-slate-900">店长 (Manager)</div>
                         <div className="text-xs text-slate-500">{new Date().toLocaleDateString()}</div>
                     </div>
-                    <div className="w-10 h-10 bg-orange-100 rounded-full flex items-center justify-center text-orange-600 font-bold border-2 border-orange-200">A</div>
+                    <div className="w-10 h-10 bg-orange-100 rounded-full flex items-center justify-center text-orange-600 font-bold border-2 border-orange-200">M</div>
                 </div>
             </header>
             

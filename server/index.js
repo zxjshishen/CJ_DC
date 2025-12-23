@@ -1,6 +1,6 @@
 const path = require('path');
 // 显式指定 .env 文件路径为当前文件所在目录下的 .env
-require('dotenv').config({ path: path.join(__dirname, '.env') }); 
+const result = require('dotenv').config({ path: path.join(__dirname, '.env') });
 
 const express = require('express');
 const mysql = require('mysql2');
@@ -14,7 +14,10 @@ app.use(express.json());
 
 // 增加请求日志中间件，方便调试
 app.use((req, res, next) => {
-    console.log(`[Request] ${req.method} ${req.url}`);
+    // 忽略 favicon 请求日志
+    if (req.url !== '/favicon.ico') {
+        console.log(`[Request] ${req.method} ${req.url}`);
+    }
     next();
 });
 
@@ -38,10 +41,18 @@ const storage = multer.diskStorage({
 const upload = multer({ storage: storage });
 
 // --- 2. 数据库连接 ---
+
+// 修复：如果环境变量中有莫名其妙的 k8s 地址，强制使用 localhost
+let dbHost = process.env.DB_HOST || 'localhost';
+if (dbHost.includes('test-db-mysql.ns-a8otxcxh.svc')) {
+    console.warn('⚠️ 检测到错误的云环境 Host 变量，已自动修正为 localhost');
+    dbHost = '127.0.0.1';
+}
+
 const dbConfig = {
-    host: process.env.DB_HOST || 'localhost',
+    host: dbHost,
     user: process.env.DB_USER || 'root',
-    password: process.env.DB_PASSWORD, 
+    password: process.env.DB_PASSWORD, // 必须从 .env 读取
     database: process.env.DB_NAME || 'cjdcxt',
     port: parseInt(process.env.DB_PORT || '3306'),
     waitForConnections: true,
@@ -50,6 +61,13 @@ const dbConfig = {
     multipleStatements: true,
     charset: 'utf8mb4'
 };
+
+console.log('-----------------------------------');
+console.log('正在连接数据库...');
+console.log(`Host: ${dbConfig.host}`);
+console.log(`User: ${dbConfig.user}`);
+console.log(`Database: ${dbConfig.database}`);
+console.log('-----------------------------------');
 
 const db = mysql.createPool(dbConfig);
 
@@ -61,10 +79,16 @@ app.get('/', (req, res) => {
 // 简单的保活检查
 db.getConnection((err, connection) => {
     if (err) {
-        console.error('⚠️ 数据库连接警告:', err.message);
-        console.error('提示: 即使数据库未连接，前端现在也支持离线模式运行。');
+        console.error('❌ 数据库连接失败:', err.message);
+        if (err.code === 'ER_ACCESS_DENIED_ERROR') {
+            console.error('👉 原因: 密码错误或用户权限不足。请检查 server/.env 文件。');
+        } else if (err.code === 'ECONNREFUSED') {
+            console.error('👉 原因: 数据库未启动，或者端口不对 (默认3306)。');
+        } else if (err.code === 'ENOTFOUND') {
+            console.error('👉 原因: 找不到主机地址。');
+        }
     } else {
-        console.log('✅ 成功连接到数据库:', dbConfig.database);
+        console.log('✅ 成功连接到 MySQL 数据库!');
         connection.release();
     }
 });
@@ -79,6 +103,7 @@ app.post('/api/upload', upload.single('file'), (req, res) => {
 app.get('/api/dishes', (req, res) => {
     db.query('SELECT * FROM dishes WHERE status = 1 ORDER BY name ASC', (err, results) => {
         if (err) {
+            // 如果表不存在，返回空数组，不报错
             if (err.code === 'ER_NO_SUCH_TABLE') return res.json([]);
             console.error("查询菜品失败:", err.message);
             return res.status(500).json({ error: err.message });
