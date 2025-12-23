@@ -42,15 +42,9 @@ const upload = multer({ storage: storage });
 
 // --- 2. 数据库连接 ---
 
-// 修复：如果环境变量中有莫名其妙的 k8s 地址，强制使用 localhost
-let dbHost = process.env.DB_HOST || 'localhost';
-if (dbHost.includes('test-db-mysql.ns-a8otxcxh.svc')) {
-    console.warn('⚠️ 检测到错误的云环境 Host 变量，已自动修正为 localhost');
-    dbHost = '127.0.0.1';
-}
-
+// 直接读取环境变量，不做修改，信任用户的配置
 const dbConfig = {
-    host: dbHost,
+    host: process.env.DB_HOST || 'localhost',
     user: process.env.DB_USER || 'root',
     password: process.env.DB_PASSWORD, // 必须从 .env 读取
     database: process.env.DB_NAME || 'cjdcxt',
@@ -85,7 +79,7 @@ db.getConnection((err, connection) => {
         } else if (err.code === 'ECONNREFUSED') {
             console.error('👉 原因: 数据库未启动，或者端口不对 (默认3306)。');
         } else if (err.code === 'ENOTFOUND') {
-            console.error('👉 原因: 找不到主机地址。');
+            console.error('👉 原因: 无法解析主机地址。如果您在本地运行，可能无法直接连接到云服务器的内网地址。');
         }
     } else {
         console.log('✅ 成功连接到 MySQL 数据库!');
