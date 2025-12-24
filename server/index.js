@@ -42,22 +42,22 @@ const upload = multer({ storage: storage });
 
 // --- 2. 数据库连接 ---
 
-// 直接读取环境变量，不做修改，信任用户的配置
 const dbConfig = {
-    host: process.env.DB_HOST || 'localhost',
-    user: process.env.DB_USER || 'root',
-    password: process.env.DB_PASSWORD, // 必须从 .env 读取
+    host: process.env.DB_HOST, // 从 .env 读取
+    user: process.env.DB_USER, // 从 .env 读取
+    password: process.env.DB_PASSWORD, // 从 .env 读取
     database: process.env.DB_NAME || 'cjdcxt',
     port: parseInt(process.env.DB_PORT || '3306'),
     waitForConnections: true,
     connectionLimit: 10,
     queueLimit: 0,
+    connectTimeout: 20000, // 增加连接超时时间到20秒，适应云环境网络波动
     multipleStatements: true,
     charset: 'utf8mb4'
 };
 
 console.log('-----------------------------------');
-console.log('正在连接数据库...');
+console.log('正在连接云端数据库...');
 console.log(`Host: ${dbConfig.host}`);
 console.log(`User: ${dbConfig.user}`);
 console.log(`Database: ${dbConfig.database}`);
@@ -74,15 +74,19 @@ app.get('/', (req, res) => {
 db.getConnection((err, connection) => {
     if (err) {
         console.error('❌ 数据库连接失败:', err.message);
-        if (err.code === 'ER_ACCESS_DENIED_ERROR') {
-            console.error('👉 原因: 密码错误或用户权限不足。请检查 server/.env 文件。');
-        } else if (err.code === 'ECONNREFUSED') {
-            console.error('👉 原因: 数据库未启动，或者端口不对 (默认3306)。');
-        } else if (err.code === 'ENOTFOUND') {
-            console.error('👉 原因: 无法解析主机地址。如果您在本地运行，可能无法直接连接到云服务器的内网地址。');
+        console.error('-----------------------------------');
+        if (err.code === 'ENOTFOUND') {
+            console.error('👉 错误原因: 无法解析主机地址。');
+            console.error(`   您配置的地址 "${dbConfig.host}" 看起来是云内网地址(.svc)。`);
+            console.error('   如果您是在本地电脑运行代码，请检查是否需要连接VPN，或者应使用数据库的【公网IP】。');
+        } else if (err.code === 'ETIMEDOUT') {
+            console.error('👉 错误原因: 连接超时。请检查安全组/防火墙是否允许 3306 端口访问。');
+        } else if (err.code === 'ER_ACCESS_DENIED_ERROR') {
+            console.error('👉 错误原因: 密码或用户名错误。');
         }
+        console.error('-----------------------------------');
     } else {
-        console.log('✅ 成功连接到 MySQL 数据库!');
+        console.log('✅ 成功连接到云端 MySQL 数据库!');
         connection.release();
     }
 });
